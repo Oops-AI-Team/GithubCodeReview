@@ -1,6 +1,11 @@
-import { Env, ReviewTask } from './types';
+import { Env, ProgressEntry, ReviewTask } from './types';
 import { verifyWebhookSignature } from './verify';
-import { getInstallationToken, postReview } from './github';
+import {
+  getInstallationToken,
+  postIssueComment,
+  postReview,
+  updateIssueComment,
+} from './github';
 import { triggerADPReview } from './adp';
 import { buildReviewPrompt } from './prompt';
 
@@ -18,7 +23,13 @@ export default {
       return handleWebhook(request, env, ctx);
     }
 
-    // ADP callback endpoint — ADP calls this when review is complete
+    // ADP progress endpoint — agent reports incremental progress here.
+    // Each call appends a line to the sticky placeholder comment on the PR.
+    if (url.pathname === '/api/adp/progress' && request.method === 'POST') {
+      return handleADPProgress(request, env, ctx);
+    }
+
+    // ADP callback endpoint — agent calls this once when the review is done.
     if (url.pathname === '/api/adp/callback' && request.method === 'POST') {
       return handleADPCallback(request, env, ctx);
     }
@@ -112,6 +123,87 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
   return new Response('Event ignored', { status: 200 });
 }
 
+// ─── ADP Progress Handler ───────────────────────────────────
+//
+// ADP agent POSTs incremental progress updates while it's working.
+// Each update is appended to the task's progressLog and the placeholder
+// comment is rewritten in place (PATCH).
+//
+// Body:
+//   {
+//     "correlationId": "<conversationId>",
+//     "stage": "cloning" | "analyzing" | ...    (optional)
+//     "message": "已完成 8/12 文件的扫描"        (required)
+//   }
+
+async function handleADPProgress(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  let data: { correlationId?: string; stage?: string; message?: string };
+  try {
+    data = await request.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  const { correlationId, stage, message } = data;
+  if (!correlationId || !message) {
+    return Response.json(
+      { error: 'Missing correlationId or message' },
+      { status: 400 },
+    );
+  }
+
+  const taskKey = `task:${correlationId}`;
+  const taskData = (await env.TASKS_KV.get(taskKey, 'json')) as ReviewTask | null;
+  if (!taskData) {
+    return Response.json({ error: 'Task not found', correlationId }, { status: 404 });
+  }
+
+  // If the task is already completed/failed, ignore late progress updates so
+  // we don't trash the final review output.
+  if (taskData.status !== 'pending') {
+    return Response.json(
+      { status: 'ignored', reason: `task is ${taskData.status}` },
+      { status: 200 },
+    );
+  }
+
+  const entry: ProgressEntry = {
+    at: Date.now(),
+    stage: stage?.trim() || undefined,
+    message: message.slice(0, 2000), // hard cap per entry
+  };
+  taskData.progressLog = [...(taskData.progressLog ?? []), entry].slice(-50); // cap log size
+  await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
+
+  // Rewrite the placeholder comment in background; respond fast to ADP.
+  ctx.waitUntil(
+    (async () => {
+      if (!taskData.placeholderCommentId) return;
+      try {
+        const token = await getInstallationToken(env, taskData.installationId);
+        await updateIssueComment(
+          token,
+          taskData.owner,
+          taskData.repo,
+          taskData.placeholderCommentId,
+          renderProgressComment(taskData),
+        );
+      } catch (err) {
+        console.error(
+          `Failed to update progress comment for ${correlationId}:`,
+          err,
+        );
+      }
+    })(),
+  );
+
+  return Response.json({ status: 'accepted' }, { status: 202 });
+}
+
 // ─── ADP Callback Handler ───────────────────────────────────
 
 async function handleADPCallback(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -134,33 +226,65 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
     return Response.json({ error: 'Missing correlationId or review' }, { status: 400 });
   }
 
-  // correlationId is the ConversationId = "owner/repo/prNumber"
-  // Load task context from KV
-  const taskData = await env.TASKS_KV.get(`task:${correlationId}`, 'json') as ReviewTask | null;
+  // correlationId is the ConversationId = derived from owner/repo/prNumber.
+  const taskKey = `task:${correlationId}`;
+  const taskData = (await env.TASKS_KV.get(taskKey, 'json')) as ReviewTask | null;
   if (!taskData) {
     return Response.json({ error: 'Task not found', correlationId }, { status: 404 });
   }
 
-  // Post review to GitHub in background
+  // Finalize in the background so ADP gets a fast 202.
   ctx.waitUntil(
     (async () => {
       try {
         const token = await getInstallationToken(env, taskData.installationId);
+
+        // 1. Post the formal review (lands in the PR's "Files changed" review tab).
         await postReview(token, taskData.owner, taskData.repo, taskData.prNumber, review);
 
-        // Update task status
+        // 2. Mark the placeholder comment as completed, preserving the
+        //    progress history for transparency (option C).
         taskData.status = 'completed';
         taskData.completedAt = Date.now();
-        await env.TASKS_KV.put(`task:${correlationId}`, JSON.stringify(taskData));
+        if (taskData.placeholderCommentId) {
+          await updateIssueComment(
+            token,
+            taskData.owner,
+            taskData.repo,
+            taskData.placeholderCommentId,
+            renderProgressComment(taskData),
+          );
+        }
+
+        await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
       } catch (err) {
-        console.error(`Failed to post review for ${taskData.owner}/${taskData.repo}#${taskData.prNumber}:`, err);
+        console.error(
+          `Failed to post review for ${taskData.owner}/${taskData.repo}#${taskData.prNumber}:`,
+          err,
+        );
 
         taskData.status = 'failed';
         taskData.error = (err as Error).message;
         taskData.completedAt = Date.now();
-        await env.TASKS_KV.put(`task:${correlationId}`, JSON.stringify(taskData));
+        await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
+
+        // Best-effort: surface the failure on the placeholder comment.
+        if (taskData.placeholderCommentId) {
+          try {
+            const token = await getInstallationToken(env, taskData.installationId);
+            await updateIssueComment(
+              token,
+              taskData.owner,
+              taskData.repo,
+              taskData.placeholderCommentId,
+              renderProgressComment(taskData),
+            );
+          } catch {
+            /* ignore — we already logged the original error */
+          }
+        }
       }
-    })()
+    })(),
   );
 
   return Response.json({ status: 'accepted' }, { status: 202 });
@@ -178,7 +302,11 @@ async function triggerReview(
   prDescription: string,
   prAuthor: string,
 ): Promise<void> {
-  const callbackUrl = `${env.CALLBACK_BASE_URL}/api/adp/callback`;
+  // The ADP system prompt (see ADP-Claw-Prompt.md) hard-codes both the
+  // /api/adp/progress and /api/adp/callback URLs against this worker's
+  // public hostname, so we no longer need to inject them per-request.
+  // CALLBACK_BASE_URL is still kept around in env for diagnostics / future
+  // routes, but is intentionally unused here.
 
   // 1. Mint a short-lived (~1 hour) GitHub App installation token.
   //    This token has access to ONLY the repos this installation covers,
@@ -190,8 +318,42 @@ async function triggerReview(
   //      - it cannot be used to access any other user's data.
   const installationToken = await getInstallationToken(env, installationId);
 
-  // 2. Trigger ADP. The agent will receive the token via prompt and
-  //    clone/inspect the repo itself.
+  // 2. Immediately post a sticky placeholder comment so the user sees
+  //    feedback within a couple of seconds. We never block ADP triggering
+  //    on this — if the comment post fails, we log and continue with no
+  //    placeholderCommentId; progress/callback handlers will skip the
+  //    update path.
+  const startedAt = Date.now();
+  const initialTask: ReviewTask = {
+    id: '', // filled in below once we know the conversationId
+    installationId,
+    owner,
+    repo,
+    prNumber,
+    status: 'pending',
+    createdAt: startedAt,
+    progressLog: [],
+  };
+
+  try {
+    const { id: commentId } = await postIssueComment(
+      installationToken,
+      owner,
+      repo,
+      prNumber,
+      renderProgressComment(initialTask),
+    );
+    initialTask.placeholderCommentId = commentId;
+  } catch (err) {
+    console.error(
+      `Failed to post placeholder comment for ${owner}/${repo}#${prNumber}:`,
+      err,
+    );
+  }
+
+  // 3. Trigger ADP. The agent receives the installation token and the
+  //    ConversationId via the prompt; it learns *what* to do (5-step SOP)
+  //    and *where* to call back from the ADP system prompt itself.
   const conversationId = await triggerADPReview(
     env,
     (cid) =>
@@ -202,7 +364,6 @@ async function triggerReview(
         prTitle,
         prDescription,
         installationToken,
-        callbackUrl,
         cid,
       ),
     owner,
@@ -211,15 +372,75 @@ async function triggerReview(
     prAuthor,
   );
 
-  // 3. Store task context in KV (keyed by conversationId).
-  const task: ReviewTask = {
-    id: conversationId,
-    installationId,
-    owner,
-    repo,
-    prNumber,
-    status: 'pending',
-    createdAt: Date.now(),
-  };
-  await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(task));
+  // 4. Persist task context keyed by conversationId so progress/callback
+  //    handlers can find it.
+  initialTask.id = conversationId;
+  await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(initialTask));
+}
+
+// ─── Rendering ──────────────────────────────────────────────
+
+/**
+ * Render the sticky placeholder comment for a task. Called on three
+ * occasions: initial post, every progress update, and final completion.
+ */
+function renderProgressComment(task: ReviewTask): string {
+  const elapsedSec = Math.max(
+    0,
+    Math.round(((task.completedAt ?? Date.now()) - task.createdAt) / 1000),
+  );
+  const lines: string[] = [];
+
+  if (task.status === 'completed') {
+    lines.push(`### ✅ Code review completed`);
+    lines.push('');
+    lines.push(
+      `Final report posted as a PR review · total time: ${formatDuration(elapsedSec)}`,
+    );
+  } else if (task.status === 'failed') {
+    lines.push(`### ❌ Code review failed`);
+    lines.push('');
+    lines.push(`Error: \`${escapeMd(task.error ?? 'unknown')}\``);
+    lines.push(`Total time: ${formatDuration(elapsedSec)}`);
+  } else {
+    lines.push(`### 🤖 Reviewing this PR…`);
+    lines.push('');
+    lines.push(`Started ${formatDuration(elapsedSec)} ago.`);
+  }
+
+  const log = task.progressLog ?? [];
+  if (log.length > 0) {
+    lines.push('');
+    lines.push('<details open><summary>Progress log</summary>');
+    lines.push('');
+    for (const entry of log) {
+      const t = new Date(entry.at).toISOString().slice(11, 19); // HH:MM:SS
+      const stage = entry.stage ? `**${escapeMd(entry.stage)}** · ` : '';
+      lines.push(`- \`${t}\` ${stage}${escapeMd(entry.message)}`);
+    }
+    lines.push('');
+    lines.push('</details>');
+  }
+
+  lines.push('');
+  lines.push(`<sub>oops-code-review · task \`${task.id || 'pending'}\`</sub>`);
+  return lines.join('\n');
+}
+
+function formatDuration(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/**
+ * Lightweight Markdown escaping for user-supplied progress strings to
+ * avoid breaking the rendered comment (e.g. accidental headings, lists,
+ * or HTML tags from the agent).
+ */
+function escapeMd(s: string): string {
+  return s
+    .replace(/[<>]/g, (c) => (c === '<' ? '&lt;' : '&gt;'))
+    .replace(/\r?\n/g, ' ');
 }
