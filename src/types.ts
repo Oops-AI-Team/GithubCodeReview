@@ -21,7 +21,7 @@ export interface ReviewTask {
   owner: string;
   repo: string;
   prNumber: number;
-  status: 'pending' | 'completed' | 'failed';
+  status: "pending" | "completed" | "failed";
   createdAt: number;
   completedAt?: number;
   error?: string;
