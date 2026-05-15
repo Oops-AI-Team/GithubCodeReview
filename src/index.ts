@@ -68,9 +68,11 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
 
       case 'issue_comment': {
         const action = payload.action;
+        console.log(`issue_comment: action=${action}, isPR=${!!payload.issue?.pull_request}, body=${payload.comment?.body}`);
         if (action === 'created' && payload.issue?.pull_request) {
           const commentBody = payload.comment?.body ?? '';
           const botName = env.GITHUB_APP_NAME ? `@${env.GITHUB_APP_NAME}` : '@oops-github-app';
+          console.log(`botName="${botName}", commentBody="${commentBody}"`);
 
           if (!commentBody.toLowerCase().includes(botName.toLowerCase())) {
             return new Response('Not a bot mention', { status: 200 });
