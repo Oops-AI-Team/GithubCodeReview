@@ -180,10 +180,38 @@ async function triggerReview(
 ): Promise<void> {
   const callbackUrl = `${env.CALLBACK_BASE_URL}/api/adp/callback`;
 
-  // 1. Trigger ADP and get the encoded ConversationId (valid per ADP format)
-  const conversationId = await triggerADPReview(env, buildReviewPrompt(owner, repo, prNumber, prTitle, prDescription, callbackUrl), owner, repo, prNumber, prAuthor);
+  // 1. Mint a short-lived (~1 hour) GitHub App installation token.
+  //    This token has access to ONLY the repos this installation covers,
+  //    with the permissions configured on the GitHub App (Contents:read +
+  //    Pull requests:read/write recommended). It is safe to hand to the
+  //    ADP agent for a single review run because:
+  //      - lifetime is capped at 1 hour by GitHub;
+  //      - scope is limited to this installation's repos;
+  //      - it cannot be used to access any other user's data.
+  const installationToken = await getInstallationToken(env, installationId);
 
-  // 2. Store task context in KV (keyed by conversationId)
+  // 2. Trigger ADP. The agent will receive the token via prompt and
+  //    clone/inspect the repo itself.
+  const conversationId = await triggerADPReview(
+    env,
+    (cid) =>
+      buildReviewPrompt(
+        owner,
+        repo,
+        prNumber,
+        prTitle,
+        prDescription,
+        installationToken,
+        callbackUrl,
+        cid,
+      ),
+    owner,
+    repo,
+    prNumber,
+    prAuthor,
+  );
+
+  // 3. Store task context in KV (keyed by conversationId).
   const task: ReviewTask = {
     id: conversationId,
     installationId,

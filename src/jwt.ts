@@ -50,11 +50,44 @@ function base64urlEncode(buffer: ArrayBuffer): string {
 }
 
 /**
+ * Normalize the GITHUB_PRIVATE_KEY secret into a PEM string.
+ *
+ * Accepted input formats (we try them in order):
+ *   1. Raw PEM with real newlines (paste-from-file style).
+ *   2. Raw PEM with literal "\n" sequences (common when stored in env vars).
+ *   3. Single-line base64 of the entire PEM file (legacy format).
+ *
+ * Never call atob() blindly — PEM contains "-----BEGIN..." and newlines
+ * which are NOT valid base64 and will throw InvalidCharacterError.
+ */
+function normalizePrivateKey(raw: string): string {
+  if (!raw) throw new Error("GITHUB_PRIVATE_KEY is empty");
+
+  // Case 1 & 2: looks like a PEM already.
+  if (raw.includes("-----BEGIN")) {
+    // Convert literal "\n" → real newlines (in case it was stored that way).
+    return raw.replace(/\\n/g, "\n");
+  }
+
+  // Case 3: assume single-line base64 of the PEM file.
+  try {
+    const decoded = atob(raw.replace(/\s+/g, ""));
+    if (decoded.includes("-----BEGIN")) return decoded;
+  } catch {
+    // fall through
+  }
+
+  throw new Error(
+    "GITHUB_PRIVATE_KEY format not recognized. Expected PEM (-----BEGIN ...-----) or base64-encoded PEM.",
+  );
+}
+
+/**
  * Generate a GitHub App JWT (valid for max 10 minutes).
  * Uses RS256 signing via WebCrypto.
  */
 export async function generateJWT(env: Env): Promise<string> {
-  const privateKey = atob(env.GITHUB_PRIVATE_KEY); // decode base64 -> PEM
+  const privateKey = normalizePrivateKey(env.GITHUB_PRIVATE_KEY);
   const now = Math.floor(Date.now() / 1000);
 
   const header = { alg: "RS256", typ: "JWT" };

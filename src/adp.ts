@@ -49,13 +49,22 @@ function generateRequestId(conversationId: string): string {
 
 /**
  * Trigger ADP agent to start a code review.
- * ConversationId is PR-based (encoded from owner/repo/prNumber) so same PR shares conversation context.
- * VisitorId uses the PR author name for context.
- * This function returns immediately after confirming ADP received the request.
+ *
+ * `promptBuilder` receives the resolved ConversationId so the prompt can
+ * embed it (the agent must echo it back as `correlationId` in the callback).
+ *
+ * ConversationId is PR-based so the same PR shares conversation context
+ * across re-triggers. VisitorId uses the PR author name for context.
+ *
+ * This function returns after ADP accepts the request. The actual review
+ * arrives later via the callback endpoint.
+ *
+ * NOTE: the prompt may contain a short-lived GitHub installation token —
+ * keep logging minimal and do NOT log the prompt body.
  */
 export async function triggerADPReview(
   env: Env,
-  prompt: string,
+  promptBuilder: (conversationId: string) => string,
   owner: string,
   repo: string,
   prNumber: number,
@@ -64,6 +73,7 @@ export async function triggerADPReview(
   const url = env.ADP_SSE_URL || 'https://wss.lke.cloud.tencent.com/adp/v2/chat';
   const conversationId = await encodeConversationId(owner, repo, prNumber);
   const requestId = generateRequestId(conversationId);
+  const prompt = promptBuilder(conversationId);
 
   const requestBody = {
     RequestId: requestId,
@@ -75,7 +85,10 @@ export async function triggerADPReview(
     Incremental: false,
   };
 
-  console.log(`ADP request: ConversationId=${conversationId}, RequestId=${requestId}, VisitorId=${prAuthor}`);
+  // Log only metadata; never log `prompt` (contains a short-lived token).
+  console.log(
+    `ADP request: ConversationId=${conversationId}, RequestId=${requestId}, VisitorId=${prAuthor}, promptLen=${prompt.length}`,
+  );
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -90,6 +103,6 @@ export async function triggerADPReview(
     throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
   }
 
-  // Return conversationId so caller can use it as KV key
+  // Return conversationId so caller can use it as KV key.
   return conversationId;
 }
