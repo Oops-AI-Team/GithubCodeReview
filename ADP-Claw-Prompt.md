@@ -256,7 +256,6 @@ Generate `review` field strictly per this layout. Replace all `<...>` placeholde
 | `<PRIMARY_CONCERN>` | URL-encoded, e.g. `Security%20%2B%20Error%20Handling` |
 | `<FILES_TOUCHED>` | `N changed · +A / −D` |
 | `<COVERAGE>` | `100% (N/N)` |
-| `<CONVERSATION_ID>` | `{{API.ConversationId}}` |
 | `<DURATION>` | e.g. `38.4s` or `n/a` |
 
 ## Finding Rules
@@ -382,19 +381,6 @@ flowchart LR
 Comment `/oops review` to re-trigger after fixes.
 
 ---
-
-<details>
-<summary>📊 Review Metadata</summary>
-
-| | |
-|---|---|
-| Reviewer | `oops-app` (ADP-Claw) |
-| Conversation ID | `{{API.ConversationId}}` |
-| Duration | <DURATION> |
-| Stages | planning → fetching → analyzing → summarizing → callback |
-| Model | Claude Sonnet · via Tencent Cloud ADP |
-
-</details>
 
 <div align="center">
 

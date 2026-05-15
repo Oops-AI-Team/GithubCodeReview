@@ -239,11 +239,8 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
       try {
         const token = await getInstallationToken(env, taskData.installationId);
 
-        // 1. Post the formal review (lands in the PR's "Files changed" review tab).
-        await postReview(token, taskData.owner, taskData.repo, taskData.prNumber, review);
-
-        // 2. Mark the placeholder comment as completed, preserving the
-        //    progress history for transparency (option C).
+        // Replace the placeholder comment with the full review report,
+        // instead of posting a separate PR review + leaving a stub.
         taskData.status = 'completed';
         taskData.completedAt = Date.now();
         if (taskData.placeholderCommentId) {
@@ -252,8 +249,11 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
             taskData.owner,
             taskData.repo,
             taskData.placeholderCommentId,
-            renderProgressComment(taskData),
+            review,
           );
+        } else {
+          // No placeholder to update — fall back to posting a new review.
+          await postReview(token, taskData.owner, taskData.repo, taskData.prNumber, review);
         }
 
         await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
@@ -380,6 +380,14 @@ async function triggerReview(
 
 // ─── Rendering ──────────────────────────────────────────────
 
+const STAGE_ICONS: Record<string, string> = {
+  planning: '🧭',
+  fetching: '📥',
+  analyzing: '🔎',
+  summarizing: '📝',
+  callback: '✅',
+};
+
 /**
  * Render the sticky placeholder comment for a task. Called on three
  * occasions: initial post, every progress update, and final completion.
@@ -391,39 +399,66 @@ function renderProgressComment(task: ReviewTask): string {
   );
   const lines: string[] = [];
 
+  // ── Header ──
+  lines.push('<div align="center">');
+  lines.push('');
   if (task.status === 'completed') {
-    lines.push(`### ✅ Code review completed`);
+    lines.push('### ✅ Oops Code Review');
     lines.push('');
-    lines.push(
-      `Final report posted as a PR review · total time: ${formatDuration(elapsedSec)}`,
-    );
+    lines.push(`**Review completed** · ⏱️ ${formatDuration(elapsedSec)}`);
   } else if (task.status === 'failed') {
-    lines.push(`### ❌ Code review failed`);
+    lines.push('### ❌ Oops Code Review');
     lines.push('');
-    lines.push(`Error: \`${escapeMd(task.error ?? 'unknown')}\``);
-    lines.push(`Total time: ${formatDuration(elapsedSec)}`);
+    lines.push(`**Review failed** · ⏱️ ${formatDuration(elapsedSec)}`);
   } else {
-    lines.push(`### 🤖 Reviewing this PR…`);
+    lines.push('### 🔍 Oops Code Review');
     lines.push('');
-    lines.push(`Started ${formatDuration(elapsedSec)} ago.`);
+    lines.push(`**Reviewing this PR…** · ⏱️ ${formatDuration(elapsedSec)}`);
+  }
+  lines.push('');
+  lines.push('</div>');
+  lines.push('');
+  lines.push('---');
+
+  // ── Error callout (failed only) ──
+  if (task.status === 'failed') {
+    lines.push('');
+    lines.push(`> ❌ Error: \`${escapeMd(task.error ?? 'unknown')}\``);
   }
 
+  // ── Progress table ──
   const log = task.progressLog ?? [];
   if (log.length > 0) {
+    const openAttr = task.status === 'pending' ? ' open' : '';
     lines.push('');
-    lines.push('<details open><summary>Progress log</summary>');
+    lines.push(`<details${openAttr}><summary>📋 Progress</summary>`);
     lines.push('');
+    lines.push('| Time | Stage | Detail |');
+    lines.push('|---:|:---:|---|');
     for (const entry of log) {
       const t = new Date(entry.at).toISOString().slice(11, 19); // HH:MM:SS
-      const stage = entry.stage ? `**${escapeMd(entry.stage)}** · ` : '';
-      lines.push(`- \`${t}\` ${stage}${escapeMd(entry.message)}`);
+      const icon = entry.stage ? (STAGE_ICONS[entry.stage] ?? '·') : '·';
+      const stageLabel = entry.stage ? ` ${escapeMd(entry.stage)}` : '';
+      lines.push(`| \`${t}\` | ${icon}${stageLabel} | ${escapeMd(entry.message)} |`);
     }
     lines.push('');
     lines.push('</details>');
   }
 
+  // ── Completion note ──
+  if (task.status === 'completed') {
+    lines.push('');
+    lines.push('> 📄 Final report posted as a PR review.');
+  }
+
+  // ── Footer ──
   lines.push('');
-  lines.push(`<sub>oops-code-review · task \`${task.id || 'pending'}\`</sub>`);
+  lines.push('<div align="center">');
+  lines.push('');
+  lines.push('<sub>Oops Code Review · Powered by <a href="https://adp.cloud.tencent.com/"><b>Tencent Cloud ADP</b></a></sub>');
+  lines.push('');
+  lines.push('</div>');
+
   return lines.join('\n');
 }
 
