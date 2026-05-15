@@ -1,4 +1,4 @@
-name = "oops-github-app"
+name = "oops-code-review"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 
@@ -36,3 +36,10 @@ invocation_logs = true
 enabled = false
 persist = true
 head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
