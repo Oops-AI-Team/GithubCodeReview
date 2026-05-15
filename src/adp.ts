@@ -26,7 +26,6 @@ export async function triggerADPReview(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
     },
     body: JSON.stringify(requestBody),
   });
@@ -36,8 +35,6 @@ export async function triggerADPReview(
     throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
   }
 
-  // Consume the body to free the connection.
   // ADP runs autonomously — it will callback via /api/adp/callback when done.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  await resp.text().catch(() => {});
+  // We don't need to read the SSE stream; just fire and forget.
 }
