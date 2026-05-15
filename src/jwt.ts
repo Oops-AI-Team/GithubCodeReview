@@ -3,25 +3,35 @@ import { Env } from "./types";
 /**
  * RSA-SHA256 sign using WebCrypto API (Cloudflare Workers compatible).
  * Returns base64url-encoded signature.
+ *
+ * GitHub Apps download keys in PKCS#1 format ("-----BEGIN RSA PRIVATE KEY-----"),
+ * but WebCrypto only accepts PKCS#8 ("-----BEGIN PRIVATE KEY-----"). We detect
+ * PKCS#1 and wrap it into PKCS#8 in-memory before importing.
  */
 async function rsaSha256Sign(
   payload: string,
   privateKeyPem: string
 ): Promise<string> {
+  const isPkcs1 = /-----BEGIN RSA PRIVATE KEY-----/.test(privateKeyPem);
+
   const pemBody = privateKeyPem
-    .replace(/-----BEGIN.*?-----/g, "")
-    .replace(/-----END.*?-----/g, "")
-    .replace(/\s/g, "");
+    .replace(/-----BEGIN[^-]+-----/g, "")
+    .replace(/-----END[^-]+-----/g, "")
+    .replace(/\s+/g, "");
 
   const binaryStr = atob(pemBody);
-  const binaryDer = new Uint8Array(binaryStr.length);
+  let der: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(binaryStr.length));
   for (let i = 0; i < binaryStr.length; i++) {
-    binaryDer[i] = binaryStr.charCodeAt(i);
+    der[i] = binaryStr.charCodeAt(i);
+  }
+
+  if (isPkcs1) {
+    der = pkcs1ToPkcs8(der);
   }
 
   const key = await crypto.subtle.importKey(
     "pkcs8",
-    binaryDer.buffer,
+    der.buffer as ArrayBuffer,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"]
@@ -35,6 +45,60 @@ async function rsaSha256Sign(
   );
 
   return base64urlEncode(signature);
+}
+
+/**
+ * Wrap a PKCS#1 RSAPrivateKey blob into a PKCS#8 PrivateKeyInfo blob.
+ *
+ * PKCS#8 structure (DER):
+ *   SEQUENCE {
+ *     INTEGER 0,                                // version
+ *     SEQUENCE {                                // AlgorithmIdentifier
+ *       OID 1.2.840.113549.1.1.1 (rsaEncryption),
+ *       NULL
+ *     },
+ *     OCTET STRING { <pkcs1 RSAPrivateKey DER> }
+ *   }
+ *
+ * The AlgorithmIdentifier prefix is a fixed byte sequence; we just need to
+ * compute the outer SEQUENCE / OCTET STRING lengths.
+ */
+function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array<ArrayBuffer> {
+  // Fixed prefix: version(0) + AlgorithmIdentifier(rsaEncryption, NULL).
+  const algIdentifier = new Uint8Array([
+    0x02, 0x01, 0x00, // INTEGER 0 (version)
+    0x30, 0x0d,       // SEQUENCE (13 bytes)
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, // OID rsaEncryption
+    0x05, 0x00,       // NULL
+  ]);
+
+  const octetStringHeader = encodeAsn1Length(pkcs1.length);
+  const octetStringTotal = 1 /*tag*/ + octetStringHeader.length + pkcs1.length;
+
+  const innerLen = algIdentifier.length + octetStringTotal;
+  const outerHeader = encodeAsn1Length(innerLen);
+
+  const out = new Uint8Array(new ArrayBuffer(1 /*outer SEQUENCE tag*/ + outerHeader.length + innerLen));
+  let off = 0;
+  out[off++] = 0x30; // SEQUENCE
+  out.set(outerHeader, off); off += outerHeader.length;
+  out.set(algIdentifier, off); off += algIdentifier.length;
+  out[off++] = 0x04; // OCTET STRING
+  out.set(octetStringHeader, off); off += octetStringHeader.length;
+  out.set(pkcs1, off);
+  return out;
+}
+
+/** Encode an ASN.1 DER length (short form for <128, long form otherwise). */
+function encodeAsn1Length(len: number): Uint8Array {
+  if (len < 0x80) return new Uint8Array([len]);
+  const bytes: number[] = [];
+  let n = len;
+  while (n > 0) {
+    bytes.unshift(n & 0xff);
+    n >>>= 8;
+  }
+  return new Uint8Array([0x80 | bytes.length, ...bytes]);
 }
 
 function base64urlEncode(buffer: ArrayBuffer): string {
@@ -90,8 +154,18 @@ export async function generateJWT(env: Env): Promise<string> {
   const privateKey = normalizePrivateKey(env.GITHUB_PRIVATE_KEY);
   const now = Math.floor(Date.now() / 1000);
 
+  // GitHub requires `iss` to be an INTEGER (the App ID).
+  // Cloudflare secrets/vars come in as strings, so coerce explicitly —
+  // a string `"iss":"123"` is rejected with "Bad credentials".
+  const appId = Number(env.GITHUB_APP_ID);
+  if (!Number.isInteger(appId) || appId <= 0) {
+    throw new Error(
+      `GITHUB_APP_ID must be a positive integer, got: ${JSON.stringify(env.GITHUB_APP_ID)}`,
+    );
+  }
+
   const header = { alg: "RS256", typ: "JWT" };
-  const payload = { iss: env.GITHUB_APP_ID, iat: now - 60, exp: now + 10 * 60 };
+  const payload = { iss: appId, iat: now - 60, exp: now + 10 * 60 };
 
   const headerBuf = new TextEncoder().encode(JSON.stringify(header));
   const payloadBuf = new TextEncoder().encode(JSON.stringify(payload));
