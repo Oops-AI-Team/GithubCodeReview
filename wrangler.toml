@@ -1,0 +1,23 @@
+name = "oops-github-app"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# KV namespace binding — create first with:
+#   wrangler kv namespace create TASKS_KV
+# then paste the id here
+[[kv_namespaces]]
+binding = "TASKS_KV"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# All variables and secrets are configured via Cloudflare Dashboard or wrangler CLI:
+#
+# Vars (non-sensitive, set via Dashboard > Workers > Settings > Variables):
+#   GITHUB_APP_ID    — GitHub App ID
+#   GITHUB_APP_NAME  — Bot mention name (e.g. "oops-github-app")
+#   ADP_SSE_URL      — ADP SSE endpoint (default: https://wss.lke.cloud.tencent.com/adp/v2/chat)
+#   CALLBACK_BASE_URL — Worker public URL (e.g. https://oops-app.denox.cc)
+#
+# Secrets (sensitive, set via `wrangler secret put <NAME>`):
+#   GITHUB_PRIVATE_KEY    — RSA private key PEM (base64 encoded)
+#   GITHUB_WEBHOOK_SECRET — Webhook signing secret
+#   ADP_APP_KEY           — ADP 应用 AppKey
