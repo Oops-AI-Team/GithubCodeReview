@@ -2,7 +2,7 @@ import { Env, ReviewTask } from './types';
 import { verifyWebhookSignature } from './verify';
 import { getInstallationToken, postReview } from './github';
 import { triggerADPReview } from './adp';
-import { buildReviewPrompt, generateCorrelationId } from './prompt';
+import { buildReviewPrompt } from './prompt';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -52,13 +52,14 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
           const prNumber = payload.pull_request?.number;
           const prTitle = payload.pull_request?.title ?? '';
           const prDescription = payload.pull_request?.body ?? '';
+          const prAuthor = payload.pull_request?.user?.login ?? 'unknown';
 
           if (!installationId || !owner || !repo || !prNumber) {
             return new Response('Missing required fields', { status: 400 });
           }
 
           ctx.waitUntil(
-            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription)
+            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription, prAuthor)
           );
 
           return new Response('Review triggered', { status: 202 });
@@ -84,13 +85,14 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
           const prNumber = payload.issue?.number;
           const prTitle = payload.issue?.title ?? '';
           const prDescription = payload.issue?.body ?? '';
+          const prAuthor = payload.comment?.user?.login ?? payload.issue?.user?.login ?? 'unknown';
 
           if (!installationId || !owner || !repo || !prNumber) {
             return new Response('Missing required fields', { status: 400 });
           }
 
           ctx.waitUntil(
-            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription)
+            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription, prAuthor)
           );
 
           return new Response('Review triggered', { status: 202 });
@@ -132,10 +134,11 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
     return Response.json({ error: 'Missing correlationId or review' }, { status: 400 });
   }
 
+  // correlationId is the ConversationId = "owner/repo/prNumber"
   // Load task context from KV
   const taskData = await env.TASKS_KV.get(`task:${correlationId}`, 'json') as ReviewTask | null;
   if (!taskData) {
-    return Response.json({ error: 'Task not found' }, { status: 404 });
+    return Response.json({ error: 'Task not found', correlationId }, { status: 404 });
   }
 
   // Post review to GitHub in background
@@ -173,13 +176,16 @@ async function triggerReview(
   prNumber: number,
   prTitle: string,
   prDescription: string,
+  prAuthor: string,
 ): Promise<void> {
-  const correlationId = generateCorrelationId();
   const callbackUrl = `${env.CALLBACK_BASE_URL}/api/adp/callback`;
 
-  // 1. Store task context in KV (needed when ADP callback arrives)
+  // 1. Trigger ADP and get the encoded ConversationId (valid per ADP format)
+  const conversationId = await triggerADPReview(env, buildReviewPrompt(owner, repo, prNumber, prTitle, prDescription, callbackUrl), owner, repo, prNumber, prAuthor);
+
+  // 2. Store task context in KV (keyed by conversationId)
   const task: ReviewTask = {
-    id: correlationId,
+    id: conversationId,
     installationId,
     owner,
     repo,
@@ -187,11 +193,5 @@ async function triggerReview(
     status: 'pending',
     createdAt: Date.now(),
   };
-  await env.TASKS_KV.put(`task:${correlationId}`, JSON.stringify(task));
-
-  // 2. Build prompt with repo info and callback URL
-  const prompt = buildReviewPrompt(owner, repo, prNumber, prTitle, prDescription, callbackUrl);
-
-  // 3. Trigger ADP agent (returns immediately, ADP will callback when done)
-  await triggerADPReview(env, prompt, correlationId);
+  await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(task));
 }

@@ -5,8 +5,8 @@ import { Env } from './types';
  * The agent will autonomously clone the repo and review the PR,
  * then call back with the final review report.
  *
- * Note: correlationId is passed as ADP API's ConversationId parameter,
- * the agent should use its own ConversationId as the correlationId in the callback.
+ * ConversationId is set to "owner/repo/prNumber" so same PR shares context.
+ * The agent should use its ConversationId as the correlationId in the callback.
  */
 export function buildReviewPrompt(
   owner: string,
@@ -48,12 +48,4 @@ export function buildReviewPrompt(
 \`\`\`
 
 请确保引用具体的文件名和行范围，要具体且有建设性。如果代码看起来没有问题，请简要说明。`;
-}
-
-/**
- * Generate a correlation ID for ADP ConversationId.
- * ADP requires 32-64 chars matching ^[a-zA-Z0-9_-]{32,64}$
- */
-export function generateCorrelationId(): string {
-  return crypto.randomUUID().replace(/-/g, '');
 }
