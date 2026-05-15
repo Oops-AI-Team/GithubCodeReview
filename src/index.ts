@@ -75,7 +75,7 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
           console.log(`botName="${botName}", commentBody="${commentBody}"`);
 
           if (!commentBody.toLowerCase().includes(botName.toLowerCase())) {
-            return new Response('Not a bot mention', { status: 200 });
+            return new Response(`Not a bot mention: botName="${botName}", commentBody="${commentBody}"`, { status: 200 });
           }
 
           const installationId = payload.installation?.id;
