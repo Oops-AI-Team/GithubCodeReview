@@ -188,8 +188,8 @@ async function triggerReview(
   await env.TASKS_KV.put(`task:${correlationId}`, JSON.stringify(task));
 
   // 2. Build prompt with repo info and callback URL
-  const prompt = buildReviewPrompt(env, owner, repo, prNumber, prTitle, prDescription, callbackUrl, correlationId);
+  const prompt = buildReviewPrompt(owner, repo, prNumber, prTitle, prDescription, callbackUrl);
 
   // 3. Trigger ADP agent (returns immediately, ADP will callback when done)
-  await triggerADPReview(env, prompt, correlationId, callbackUrl);
+  await triggerADPReview(env, prompt, correlationId);
 }

@@ -4,16 +4,17 @@ import { Env } from './types';
  * Build the review prompt sent to ADP agent.
  * The agent will autonomously clone the repo and review the PR,
  * then call back with the final review report.
+ *
+ * Note: correlationId is passed as ADP API's ConversationId parameter,
+ * the agent should use its own ConversationId as the correlationId in the callback.
  */
 export function buildReviewPrompt(
-  env: Env,
   owner: string,
   repo: string,
   prNumber: number,
   prTitle: string,
   prDescription: string,
   callbackUrl: string,
-  correlationId: string,
 ): string {
   return `你是一个专业的代码审查助手。请对以下 GitHub Pull Request 进行全面代码审查。
 
@@ -21,7 +22,6 @@ export function buildReviewPrompt(
 - **仓库**: ${owner}/${repo}
 - **PR #${prNumber}**: ${prTitle}
 - **描述**: ${prDescription || '(无描述)'}
-- **任务ID**: ${correlationId}
 
 ## 审查步骤
 1. 克隆仓库 \`${owner}/${repo}\`，切换到 PR #${prNumber} 的分支
@@ -34,7 +34,7 @@ export function buildReviewPrompt(
    - **最佳实践** — 错误处理、类型安全、测试建议
 
 ## 输出要求
-审查完成后，请将最终报告以 Markdown 格式 POST 到以下回调地址：
+审查完成后，请将最终报告以 POST 请求发送到以下回调地址：
 
 **回调 URL**: ${callbackUrl}
 **请求方法**: POST
@@ -42,7 +42,7 @@ export function buildReviewPrompt(
 **请求体格式**:
 \`\`\`json
 {
-  "correlationId": "${correlationId}",
+  "correlationId": "<你的ConversationId>",
   "review": "这里是完整的 Markdown 格式审查报告"
 }
 \`\`\`

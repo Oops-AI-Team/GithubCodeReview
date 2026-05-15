@@ -2,14 +2,13 @@ import { Env } from './types';
 
 /**
  * Trigger ADP agent to start a code review.
- * ADP will autonomously clone the repo, review the PR, and call back with results.
- * This function returns immediately — it does NOT wait for ADP to finish.
+ * Sets ConversationId = correlationId so the agent can use it as correlationId in callback.
+ * This function returns immediately after confirming ADP received the request.
  */
 export async function triggerADPReview(
   env: Env,
   prompt: string,
   correlationId: string,
-  callbackUrl: string,
 ): Promise<void> {
   const url = env.ADP_SSE_URL || 'https://wss.lke.cloud.tencent.com/adp/v2/chat';
 
@@ -21,9 +20,6 @@ export async function triggerADPReview(
     Contents: [{ Type: 'text', Text: prompt }],
     Stream: 'enable',
     Incremental: false,
-    // Pass callback info so ADP agent knows where to send the final report
-    CallbackUrl: callbackUrl,
-    CorrelationId: correlationId,
   };
 
   const resp = await fetch(url, {
@@ -40,8 +36,8 @@ export async function triggerADPReview(
     throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
   }
 
-  // We don't need to parse the SSE stream — ADP will callback when done.
-  // Just consume the body to avoid leaking the connection.
+  // Consume the body to free the connection.
+  // ADP runs autonomously — it will callback via /api/adp/callback when done.
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   await resp.text().catch(() => {});
 }
