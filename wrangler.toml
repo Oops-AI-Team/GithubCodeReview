@@ -7,7 +7,7 @@ compatibility_date = "2024-12-01"
 # then paste the id here
 [[kv_namespaces]]
 binding = "TASKS_KV"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+id = "eb9347b94e344e1bb92da287ef435a21"
 
 # All variables and secrets are configured via Cloudflare Dashboard or wrangler CLI:
 #
@@ -21,3 +21,18 @@ id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #   GITHUB_PRIVATE_KEY    — RSA private key PEM (base64 encoded)
 #   GITHUB_WEBHOOK_SECRET — Webhook signing secret
 #   ADP_APP_KEY           — ADP 应用 AppKey
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
