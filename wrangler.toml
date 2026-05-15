@@ -1,4 +1,4 @@
-name = "oops-github-app"
+name = "oops-code-review"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 
