@@ -1,29 +1,23 @@
 import { Env } from './types';
 
 /**
- * Encode owner/repo/prNumber into a valid ConversationId (32-64 chars, ^[a-zA-Z0-9_-]+$).
- * - Same (owner, repo, prNumber) MUST always produce the same id (so PR conversation context is preserved).
- * - Different PRs MUST produce different ids (no truncation collisions).
+ * Generate a unique ConversationId for each review run (32-64 chars, ^[a-zA-Z0-9_-]+$).
+ *
+ * Each review gets its own ConversationId so that ADP always starts a fresh
+ * conversation — re-triggering a review on the same PR must NOT reuse the
+ * existing ADP conversation (the agent would skip re-analysis otherwise).
  *
  * Strategy:
  *   - Build a sanitized prefix `pr_{owner}_{repo}_{prNumber}_`
- *   - Append a deterministic SHA-256-based suffix derived from the raw key
+ *   - Append a random hex suffix (crypto.randomUUID) for uniqueness
  *   - Trim/pad the prefix so the total length lands in [32, 64]
  */
-async function encodeConversationId(owner: string, repo: string, prNumber: number): Promise<string> {
-  const rawKey = `${owner}/${repo}/${prNumber}`;
+function generateConversationId(owner: string, repo: string, prNumber: number): string {
   const sanitized = `pr_${owner}_${repo}_${prNumber}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  // 16-char random hex for per-run uniqueness
+  const randomHex = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
-  // 16-char hex hash → ensures uniqueness even when prefix gets trimmed
-  const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawKey));
-  const hashHex = Array.from(new Uint8Array(hashBuf))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 16);
-
-  // Reserve room for "_" + hashHex(16) at the end → 17 chars
-  // Total budget: 32..64 → prefix budget: 15..47
-  const suffix = `_${hashHex}`;
+  const suffix = `_${randomHex}`;
   const maxPrefix = 64 - suffix.length; // 48
   const minPrefix = 32 - suffix.length; // 15
 
@@ -32,7 +26,6 @@ async function encodeConversationId(owner: string, repo: string, prNumber: numbe
   if (prefix.length < minPrefix) prefix = prefix + '_'.repeat(minPrefix - prefix.length);
 
   const id = prefix + suffix;
-  // Final safety check (should always pass)
   if (!/^[a-zA-Z0-9_-]{32,64}$/.test(id)) {
     throw new Error(`Generated ConversationId is invalid: ${id}`);
   }
@@ -53,25 +46,27 @@ function generateRequestId(conversationId: string): string {
  * `promptBuilder` receives the resolved ConversationId so the prompt can
  * embed it (the agent must echo it back as `correlationId` in the callback).
  *
- * ConversationId is PR-based so the same PR shares conversation context
- * across re-triggers. VisitorId uses the PR author name for context.
+ * Each review gets a unique ConversationId so ADP always starts a fresh
+ * conversation — re-triggering a review on the same PR must NOT reuse the
+ * existing ADP conversation.
  *
- * This function returns after ADP accepts the request. The actual review
- * arrives later via the callback endpoint.
+ * Returns `{ conversationId, requestId, promise }` synchronously so the caller
+ * can persist the task to KV *before* awaiting the ADP HTTP call. This avoids
+ * a race where progress/callback arrives before the task exists in KV.
  *
  * NOTE: the prompt may contain a short-lived GitHub installation token —
  * keep logging minimal and do NOT log the prompt body.
  */
-export async function triggerADPReview(
+export function triggerADPReview(
   env: Env,
   promptBuilder: (conversationId: string) => string,
   owner: string,
   repo: string,
   prNumber: number,
   prAuthor: string,
-): Promise<string> {
+): { conversationId: string; requestId: string; promise: Promise<void> } {
   const url = env.ADP_SSE_URL || 'https://wss.lke.cloud.tencent.com/adp/v2/chat';
-  const conversationId = await encodeConversationId(owner, repo, prNumber);
+  const conversationId = generateConversationId(owner, repo, prNumber);
   const requestId = generateRequestId(conversationId);
   const prompt = promptBuilder(conversationId);
 
@@ -90,19 +85,20 @@ export async function triggerADPReview(
     `ADP request: ConversationId=${conversationId}, RequestId=${requestId}, VisitorId=${prAuthor}, promptLen=${prompt.length}`,
   );
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-  });
+  const promise = (async () => {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
-  }
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
+    }
+  })();
 
-  // Return conversationId so caller can use it as KV key.
-  return conversationId;
+  return { conversationId, requestId, promise };
 }

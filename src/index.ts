@@ -354,7 +354,11 @@ async function triggerReview(
   // 3. Trigger ADP. The agent receives the installation token and the
   //    ConversationId via the prompt; it learns *what* to do (5-step SOP)
   //    and *where* to call back from the ADP system prompt itself.
-  const conversationId = await triggerADPReview(
+  //
+  //    triggerADPReview returns synchronously with the conversationId so we
+  //    can persist the task to KV BEFORE the ADP HTTP call completes. This
+  //    avoids a race where progress/callback arrives before the task exists.
+  const { conversationId, promise: adpPromise } = triggerADPReview(
     env,
     (cid) =>
       buildReviewPrompt(
@@ -373,9 +377,35 @@ async function triggerReview(
   );
 
   // 4. Persist task context keyed by conversationId so progress/callback
-  //    handlers can find it.
+  //    handlers can find it. Must happen BEFORE the ADP call resolves to
+  //    prevent a race with incoming progress/callback requests.
   initialTask.id = conversationId;
   await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(initialTask));
+
+  // 5. Now await the ADP trigger call — if it fails we mark the task as failed.
+  try {
+    await adpPromise;
+  } catch (err) {
+    console.error(`ADP trigger failed for ${owner}/${repo}#${prNumber}:`, err);
+    initialTask.status = 'failed';
+    initialTask.error = (err as Error).message;
+    initialTask.completedAt = Date.now();
+    await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(initialTask));
+    // Best-effort: update the placeholder comment with the failure.
+    if (initialTask.placeholderCommentId) {
+      try {
+        await updateIssueComment(
+          installationToken,
+          owner,
+          repo,
+          initialTask.placeholderCommentId,
+          renderProgressComment(initialTask),
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 // ─── Rendering ──────────────────────────────────────────────
