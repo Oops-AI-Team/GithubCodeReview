@@ -28,6 +28,7 @@ export function buildReviewPrompt(
   prDescription: string,
   installationToken: string,
   conversationId: string,
+  adpAppKey: string,
 ): string {
   // Authenticated clone URL accepted by GitHub:
   //   https://x-access-token:<TOKEN>@github.com/<owner>/<repo>.git
@@ -46,6 +47,12 @@ export function buildReviewPrompt(
 \`\`\`
 ${conversationId}
 \`\`\`
+
+## 签名密钥（用于对进度与回调请求签名）
+所有对 /api/adp/progress 和 /api/adp/callback 的请求必须携带 X-ADP-Signature-256 请求头，值为 sha256=<HMAC-SHA256(requestBody, ADP_APP_KEY) 的 hex 编码>。
+${'```'}
+ADP_APP_KEY = ${adpAppKey}
+${'```'}
 
 ## 获取代码（任选其一，推荐方式 A）
 

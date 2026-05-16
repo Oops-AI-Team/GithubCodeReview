@@ -67,6 +67,24 @@ POST the report to the final callback URL. **Task ends after successful callback
 
 # API Contract
 
+## Authentication
+
+Every request to the worker endpoints (progress & callback) **must** include an `X-ADP-Signature-256` header containing an HMAC-SHA256 signature of the **raw request body** using the `ADP_APP_KEY` as the shared secret.
+
+**Signature algorithm:**
+1. Take the exact JSON string you are about to send as the request body (no re-formatting, no extra whitespace).
+2. Compute `HMAC-SHA256(requestBody, ADP_APP_KEY)`.
+3. Hex-encode the digest and set the header: `X-ADP-Signature-256: sha256=<hex-digest>`.
+
+**Pseudocode:**
+```python
+import hmac, hashlib
+signature = "sha256=" + hmac.new(ADP_APP_KEY.encode(), body.encode(), hashlib.sha256).hexdigest()
+headers["X-ADP-Signature-256"] = signature
+```
+
+> ⚠️ Requests with missing or invalid signatures will be rejected with `401`.
+
 ## Progress (multiple)
 
 ```

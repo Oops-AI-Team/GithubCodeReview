@@ -1,5 +1,5 @@
 import { Env, ProgressEntry, ReviewTask } from './types';
-import { verifyWebhookSignature } from './verify';
+import { verifyWebhookSignature, verifyADPSignature } from './verify';
 import {
   getInstallationToken,
   postIssueComment,
@@ -141,9 +141,17 @@ async function handleADPProgress(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  // Verify ADP HMAC signature
+  const body = await request.text();
+  const signature = request.headers.get('X-ADP-Signature-256') ?? '';
+  const isValid = await verifyADPSignature(body, signature, env.ADP_APP_KEY);
+  if (!isValid) {
+    return new Response('Invalid ADP signature', { status: 401 });
+  }
+
   let data: { correlationId?: string; stage?: string; message?: string };
   try {
-    data = await request.json();
+    data = JSON.parse(body);
   } catch {
     return Response.json({ error: 'Invalid JSON' }, { status: 400 });
   }
@@ -207,11 +215,13 @@ async function handleADPProgress(
 // ─── ADP Callback Handler ───────────────────────────────────
 
 async function handleADPCallback(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  let body: string;
-  try {
-    body = await request.text();
-  } catch {
-    return Response.json({ error: 'Failed to read request body' }, { status: 400 });
+  const body = await request.text();
+
+  // Verify ADP HMAC signature
+  const signature = request.headers.get('X-ADP-Signature-256') ?? '';
+  const isValid = await verifyADPSignature(body, signature, env.ADP_APP_KEY);
+  if (!isValid) {
+    return new Response('Invalid ADP signature', { status: 401 });
   }
 
   let data: { correlationId?: string; review?: string };
@@ -369,6 +379,7 @@ async function triggerReview(
         prDescription,
         installationToken,
         cid,
+        env.ADP_APP_KEY,
       ),
     owner,
     repo,
