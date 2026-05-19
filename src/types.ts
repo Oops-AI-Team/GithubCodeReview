@@ -41,13 +41,6 @@ export interface ReviewTask {
    * Undefined only if the placeholder failed to post (we degrade gracefully).
    */
   placeholderCommentId?: number;
-  /**
-   * ADP RecordId returned in the SSE stream (e.g. "rcd_xxx").
-   * Required for sending stop_generation via WebSocket.
-   */
-  adpRecordId?: string;
-  /** ADP ConversationId used for this run (same as id but kept explicit). */
-  adpConversationId?: string;
   /** Append-only progress log; rendered into the placeholder comment. */
   progressLog?: ProgressEntry[];
 }

@@ -7,7 +7,7 @@ import {
   updateIssueComment,
   deleteIssueComment,
 } from './github';
-import { triggerADPReview, stopADPReview } from './adp';
+import { triggerADPReview } from './adp';
 import { buildReviewPrompt } from './prompt';
 
 export default {
@@ -365,14 +365,6 @@ async function triggerReview(
       await env.TASKS_KV.put(`task:${prevConversationId}`, JSON.stringify(prevTaskData));
       console.log(`Cancelled previous task ${prevConversationId} for ${owner}/${repo}#${prNumber}`);
 
-      // Best-effort: send stop_generation to ADP so the old container stops
-      // consuming resources. Requires adpRecordId captured from the SSE stream.
-      if (prevTaskData.adpRecordId) {
-        stopADPReview(env, prevConversationId, prevTaskData.adpRecordId).catch((err) =>
-          console.error(`stopADPReview failed for ${prevConversationId}:`, err),
-        );
-      }
-
       // Best-effort: delete the old placeholder comment.
       if (prevTaskData.placeholderCommentId) {
         try {
@@ -453,13 +445,7 @@ async function triggerReview(
 
   // 5. Now await the ADP trigger call — if it fails we mark the task as failed.
   try {
-    const { recordId } = await adpPromise;
-    // Persist the RecordId so a future preemption can send stop_generation.
-    if (recordId) {
-      initialTask.adpRecordId = recordId;
-      initialTask.adpConversationId = conversationId;
-      await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(initialTask));
-    }
+    await adpPromise;
   } catch (err) {
     console.error(`ADP trigger failed for ${owner}/${repo}#${prNumber}:`, err);
     initialTask.status = 'failed';
