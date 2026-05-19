@@ -134,6 +134,31 @@ export async function postIssueComment(
   return { id: data.id, htmlUrl: data.html_url };
 }
 
+export async function deleteIssueComment(
+  token: string,
+  owner: string,
+  repo: string,
+  commentId: number,
+): Promise<void> {
+  const resp = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'OopsGitHubApp',
+      },
+    },
+  );
+
+  // 404 means already deleted — treat as success.
+  if (!resp.ok && resp.status !== 404) {
+    const text = await resp.text();
+    throw new Error(`Failed to delete issue comment ${commentId}: ${resp.status} ${text}`);
+  }
+}
+
 export async function updateIssueComment(
   token: string,
   owner: string,

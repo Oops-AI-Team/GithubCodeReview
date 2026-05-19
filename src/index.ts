@@ -5,6 +5,7 @@ import {
   postIssueComment,
   postReview,
   updateIssueComment,
+  deleteIssueComment,
 } from './github';
 import { triggerADPReview } from './adp';
 import { buildReviewPrompt } from './prompt';
@@ -43,6 +44,14 @@ export default {
 /** Validate external-supplied correlationId before using it as a KV key. */
 function isValidCorrelationId(id: unknown): id is string {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]{32,64}$/.test(id);
+}
+
+/**
+ * KV key that tracks the currently active task ID for a given PR.
+ * Used to cancel a superseded review when a new one is triggered.
+ */
+function activeKey(owner: string, repo: string, prNumber: number): string {
+  return `active:${owner}/${repo}/${prNumber}`;
 }
 
 // ─── GitHub Webhook Handler ─────────────────────────────────
@@ -250,6 +259,11 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
     return Response.json({ error: 'Task not found', correlationId }, { status: 404 });
   }
 
+  // Task was superseded by a newer review — discard this callback.
+  if (taskData.status === 'cancelled') {
+    return Response.json({ status: 'ignored', reason: 'task cancelled' }, { status: 200 });
+  }
+
   // Finalize in the background so ADP gets a fast 202.
   ctx.waitUntil(
     (async () => {
@@ -274,6 +288,8 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
         }
 
         await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
+        // Clear the active-task pointer now that this review is done.
+        await env.TASKS_KV.delete(activeKey(taskData.owner, taskData.repo, taskData.prNumber));
       } catch (err) {
         console.error(
           `Failed to post review for ${taskData.owner}/${taskData.repo}#${taskData.prNumber}:`,
@@ -284,6 +300,7 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
         taskData.error = (err as Error).message;
         taskData.completedAt = Date.now();
         await env.TASKS_KV.put(taskKey, JSON.stringify(taskData));
+        await env.TASKS_KV.delete(activeKey(taskData.owner, taskData.repo, taskData.prNumber));
 
         // Best-effort: surface the failure on the placeholder comment.
         if (taskData.placeholderCommentId) {
@@ -334,6 +351,30 @@ async function triggerReview(
   //      - scope is limited to this installation's repos;
   //      - it cannot be used to access any other user's data.
   const installationToken = await getInstallationToken(env, installationId);
+
+  // ── Preempt any in-flight review for this PR ───────────────
+  // If a previous task is still pending, cancel it and delete its placeholder
+  // comment so the new review starts with a clean slate.
+  const ak = activeKey(owner, repo, prNumber);
+  const prevConversationId = await env.TASKS_KV.get(ak);
+  if (prevConversationId) {
+    const prevTaskData = (await env.TASKS_KV.get(`task:${prevConversationId}`, 'json')) as ReviewTask | null;
+    if (prevTaskData && prevTaskData.status === 'pending') {
+      prevTaskData.status = 'cancelled';
+      prevTaskData.completedAt = Date.now();
+      await env.TASKS_KV.put(`task:${prevConversationId}`, JSON.stringify(prevTaskData));
+      console.log(`Cancelled previous task ${prevConversationId} for ${owner}/${repo}#${prNumber}`);
+
+      // Best-effort: delete the old placeholder comment.
+      if (prevTaskData.placeholderCommentId) {
+        try {
+          await deleteIssueComment(installationToken, owner, repo, prevTaskData.placeholderCommentId);
+        } catch (err) {
+          console.error(`Failed to delete old placeholder comment ${prevTaskData.placeholderCommentId}:`, err);
+        }
+      }
+    }
+  }
 
   // 2. Immediately post a sticky placeholder comment so the user sees
   //    feedback within a couple of seconds. We never block ADP triggering
@@ -399,6 +440,8 @@ async function triggerReview(
   //    prevent a race with incoming progress/callback requests.
   initialTask.id = conversationId;
   await env.TASKS_KV.put(`task:${conversationId}`, JSON.stringify(initialTask));
+  // Update the active-task pointer for this PR so the next trigger can preempt us.
+  await env.TASKS_KV.put(activeKey(owner, repo, prNumber), conversationId);
 
   // 5. Now await the ADP trigger call — if it fails we mark the task as failed.
   try {
