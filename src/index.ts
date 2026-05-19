@@ -114,12 +114,19 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
           const prDescription = payload.issue?.body ?? '';
           const prAuthor = payload.comment?.user?.login ?? payload.issue?.user?.login ?? 'unknown';
 
+          // Strip the bot mention and any leading "review" keyword to get the
+          // user's actual question/instruction (may be empty for plain triggers).
+          const userComment = commentBody
+            .replace(new RegExp(botName, 'gi'), '')
+            .replace(/^\s*review\s*/i, '')
+            .trim() || undefined;
+
           if (!installationId || !owner || !repo || !prNumber) {
             return new Response('Missing required fields', { status: 400 });
           }
 
           ctx.waitUntil(
-            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription, prAuthor)
+            triggerReview(env, installationId, owner, repo, prNumber, prTitle, prDescription, prAuthor, userComment)
           );
 
           return new Response('Review triggered', { status: 202 });
@@ -335,6 +342,7 @@ async function triggerReview(
   prTitle: string,
   prDescription: string,
   prAuthor: string,
+  userComment?: string,
 ): Promise<void> {
   // The ADP system prompt (see ADP-Claw-Prompt.md) hard-codes both the
   // /api/adp/progress and /api/adp/callback URLs against this worker's
@@ -428,6 +436,7 @@ async function triggerReview(
         installationToken,
         cid,
         env.ADP_APP_KEY,
+        userComment,
       ),
     owner,
     repo,

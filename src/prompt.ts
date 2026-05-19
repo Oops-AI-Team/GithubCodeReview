@@ -29,15 +29,20 @@ export function buildReviewPrompt(
   installationToken: string,
   conversationId: string,
   adpAppKey: string,
+  userComment?: string,
 ): string {
   // Authenticated clone URL accepted by GitHub:
   //   https://x-access-token:<TOKEN>@github.com/<owner>/<repo>.git
   const cloneUrl = `https://x-access-token:${installationToken}@github.com/${owner}/${repo}.git`;
 
+  const commentSection = userComment
+    ? `\n## 用户指定关注点\n用户在触发本次审查时附带了以下问题/要求，请在 ANALYZE 和 SUMMARIZE 阶段重点针对此内容作出回答：\n\n> ${userComment.replace(/\n/g, '\n> ')}\n`
+    : '';
+
   return `# 本次审查任务上下文
 
 请严格按系统提示中的 5 步 SOP（PLAN → FETCH → ANALYZE → SUMMARIZE → CALLBACK）执行，每一步先调用进度接口再开展工作。
-
+${commentSection}
 ## 仓库与 PR
 - **仓库**：${owner}/${repo}
 - **PR #${prNumber}**：${prTitle}
