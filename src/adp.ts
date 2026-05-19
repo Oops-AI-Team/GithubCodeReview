@@ -14,7 +14,6 @@ import { Env } from './types';
  */
 function generateConversationId(owner: string, repo: string, prNumber: number): string {
   const sanitized = `pr_${owner}_${repo}_${prNumber}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  // 16-char random hex for per-run uniqueness
   const randomHex = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
   const suffix = `_${randomHex}`;
@@ -56,6 +55,12 @@ function generateRequestId(conversationId: string): string {
  *
  * NOTE: the prompt may contain a short-lived GitHub installation token —
  * keep logging minimal and do NOT log the prompt body.
+ *
+ * NOTE: Stopping an in-flight ADP session is not possible without Tencent Cloud
+ * SecretId/Key (required by GetWsToken → stop_generation). In a stateless
+ * Cloudflare Workers environment, AbortController refs cannot be shared across
+ * isolates either. The soft-cancel approach (mark cancelled in KV, discard
+ * incoming callbacks) is therefore the best achievable strategy.
  */
 export function triggerADPReview(
   env: Env,
@@ -88,9 +93,7 @@ export function triggerADPReview(
   const promise = (async (): Promise<void> => {
     const resp = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
     });
 
