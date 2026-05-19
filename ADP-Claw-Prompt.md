@@ -396,7 +396,7 @@ flowchart LR
 - [ ] **P1** · <Second fix>
 - [ ] **P2** · <Optional improvement>
 
-Comment `/oops review` to re-trigger after fixes.
+Comment `@oops-codereview review` to re-trigger after fixes.
 
 ---
 

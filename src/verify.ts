@@ -24,10 +24,12 @@ async function computeHmacSha256(payload: string, secret: string): Promise<strin
  * Returns true iff `a` and `b` are identical (constant-time).
  */
 function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  // Always iterate over the longer string to avoid leaking length information
+  // via early-exit timing side-channels.
+  const len = Math.max(a.length, b.length);
+  let result = a.length ^ b.length; // non-zero when lengths differ
+  for (let i = 0; i < len; i++) {
+    result |= (a.charCodeAt(i) ?? 0) ^ (b.charCodeAt(i) ?? 0);
   }
   return result === 0;
 }

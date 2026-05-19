@@ -38,6 +38,13 @@ export default {
   },
 };
 
+// ─── Helpers ────────────────────────────────────────────────
+
+/** Validate external-supplied correlationId before using it as a KV key. */
+function isValidCorrelationId(id: unknown): id is string {
+  return typeof id === 'string' && /^[a-zA-Z0-9_-]{32,64}$/.test(id);
+}
+
 // ─── GitHub Webhook Handler ─────────────────────────────────
 
 async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -157,9 +164,9 @@ async function handleADPProgress(
   }
 
   const { correlationId, stage, message } = data;
-  if (!correlationId || !message) {
+  if (!isValidCorrelationId(correlationId) || !message) {
     return Response.json(
-      { error: 'Missing correlationId or message' },
+      { error: 'Missing or invalid correlationId / message' },
       { status: 400 },
     );
   }
@@ -232,8 +239,8 @@ async function handleADPCallback(request: Request, env: Env, ctx: ExecutionConte
   }
 
   const { correlationId, review } = data;
-  if (!correlationId || !review) {
-    return Response.json({ error: 'Missing correlationId or review' }, { status: 400 });
+  if (!isValidCorrelationId(correlationId) || !review) {
+    return Response.json({ error: 'Missing or invalid correlationId / review' }, { status: 400 });
   }
 
   // correlationId is the ConversationId = derived from owner/repo/prNumber.
@@ -489,7 +496,7 @@ function renderProgressComment(task: ReviewTask): string {
   // ── Completion note ──
   if (task.status === 'completed') {
     lines.push('');
-    lines.push('> 📄 Final report posted as a PR review.');
+    lines.push('> 📄 Final report updated in this comment.');
   }
 
   // ── Footer ──

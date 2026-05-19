@@ -1,4 +1,4 @@
-import { Env } from "./types";
+import { Env } from './types';
 
 /**
  * RSA-SHA256 sign using WebCrypto API (Cloudflare Workers compatible).
@@ -15,9 +15,9 @@ async function rsaSha256Sign(
   const isPkcs1 = /-----BEGIN RSA PRIVATE KEY-----/.test(privateKeyPem);
 
   const pemBody = privateKeyPem
-    .replace(/-----BEGIN[^-]+-----/g, "")
-    .replace(/-----END[^-]+-----/g, "")
-    .replace(/\s+/g, "");
+    .replace(/-----BEGIN[^-]+-----/g, '')
+    .replace(/-----END[^-]+-----/g, '')
+    .replace(/\s+/g, '');
 
   const binaryStr = atob(pemBody);
   let der: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(binaryStr.length));
@@ -30,16 +30,16 @@ async function rsaSha256Sign(
   }
 
   const key = await crypto.subtle.importKey(
-    "pkcs8",
+    'pkcs8',
     der.buffer as ArrayBuffer,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
-    ["sign"]
+    ['sign']
   );
 
   const encoder = new TextEncoder();
   const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
+    'RSASSA-PKCS1-v1_5',
     key,
     encoder.encode(payload)
   );
@@ -128,21 +128,21 @@ function normalizePrivateKey(raw: string): string {
   if (!raw) throw new Error("GITHUB_PRIVATE_KEY is empty");
 
   // Case 1 & 2: looks like a PEM already.
-  if (raw.includes("-----BEGIN")) {
+  if (raw.includes('-----BEGIN')) {
     // Convert literal "\n" → real newlines (in case it was stored that way).
-    return raw.replace(/\\n/g, "\n");
+    return raw.replace(/\\n/g, '\n');
   }
 
   // Case 3: assume single-line base64 of the PEM file.
   try {
-    const decoded = atob(raw.replace(/\s+/g, ""));
-    if (decoded.includes("-----BEGIN")) return decoded;
+    const decoded = atob(raw.replace(/\s+/g, ''));
+    if (decoded.includes('-----BEGIN')) return decoded;
   } catch {
     // fall through
   }
 
   throw new Error(
-    "GITHUB_PRIVATE_KEY format not recognized. Expected PEM (-----BEGIN ...-----) or base64-encoded PEM.",
+    'GITHUB_PRIVATE_KEY format not recognized. Expected PEM (-----BEGIN ...-----) or base64-encoded PEM.',
   );
 }
 
@@ -164,7 +164,7 @@ export async function generateJWT(env: Env): Promise<string> {
     );
   }
 
-  const header = { alg: "RS256", typ: "JWT" };
+  const header = { alg: 'RS256', typ: 'JWT' };
   const payload = { iss: appId, iat: now - 60, exp: now + 10 * 60 };
 
   const headerBuf = new TextEncoder().encode(JSON.stringify(header));

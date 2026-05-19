@@ -98,6 +98,22 @@ export function triggerADPReview(
       const text = await resp.text();
       throw new Error(`ADP trigger request failed: ${resp.status} ${text}`);
     }
+
+    // Must drain the SSE stream to keep the connection alive for the full
+    // agent session. If we return without reading, Cloudflare Workers GCs the
+    // fetch connection and ADP cancels the in-flight task — causing the
+    // placeholder comment to stay stuck at "Reviewing this PR…" forever.
+    if (resp.body) {
+      const reader = resp.body.getReader();
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
   })();
 
   return { conversationId, requestId, promise };
